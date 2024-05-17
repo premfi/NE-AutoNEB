@@ -1,0 +1,8 @@
+pykeops
+torch
+torchvision
+networkx
+numpy
+tqdm
+matplotlib
+scipy
