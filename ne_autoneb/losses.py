@@ -1,9 +1,16 @@
 import torch
-
 import numpy as np
+
 import pykeops
 pykeops.test_torch_bindings()
 from pykeops.torch import LazyTensor
+
+# use first visible cuda device as default
+import os
+cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+cuda_default_device = int(cuda_visible_devices.split(",")[0])
+print(f"cuda default device set to {cuda_default_device}")
+del cuda_visible_devices
 
 # function by Roman Remme
 class ContiguousBackward(torch.autograd.Function):
@@ -16,29 +23,45 @@ class ContiguousBackward(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        #print("[ContiguousBackward] called with:", grad_output, "contiguous:", grad_output.is_contiguous())
         return grad_output.contiguous()
 
 class UMAP_loss(torch.nn.Module): 
     """
-    Class to define a loss object, precomputed on a specific dataset.
+    Class to define a UMAP loss object, precomputed on a specific dataset.
     """
-    def __init__(self, x_data, y_data, UMAP_kwargs={"a":1.0, "b":1.0}, clip_grad=4.0,
-                 negative_sample_rate=5.0, push_tail=True):
+    def __init__(self, x_data, y_data=None, UMAP_kwargs={"a":1.0, "b":1.0},
+                 negative_sample_rate=5.0, push_tail=True, cuda_device=cuda_default_device, dtype=torch.float32):
         """
-        :x_data: all high dimensional data points
-        :y_data: labels for x_data
-        :clip_grad: set to 0 for no clipping
-        :UMAP_kwargs: will be passed on to umap.UMAP()
+        Parameters
+        ----------
+        x_data : numpy array
+            All high-dimensional data points.
+        y_data : numpy array, default=None
+            All labels for x_data.
+        UMAP_kwargs : dict, default={"a":1.0, "b":1.0}
+            Kwargs that will be passed on to umap.UMAP() .
+        negative_sample_rate : float, default=5.0
+            Number of negative samples per positive sample.
+        push_tail : bool, default=True
+            Whether tail of negative sample is pushed away from its head.
+        cuda_device : int, default=0
+            Index of cuda device to be used.
+        dtype : torch.dtype, default=torch.float32
+            Datatype to be used for torch tensors and pykeops LazyTensors. The default value should work for all functions.
         """
+        super().__init__()
+        import umap
 
+        # x_data will be deleted after computing high-dimensional similarities, save length onlyTo 
         self.num_datapoints = len(x_data)
     
         # save parameters
+        self.y_data = y_data
         self.push_tail = push_tail
         self.negative_sample_rate = negative_sample_rate
-        self.clip_grad = clip_grad
         self.UMAP_kwargs = UMAP_kwargs # just saving them so they can be checked later
+        self.cuda_device = cuda_device
+        self.dtype = dtype
 
         # initialize UMAP
         self.reducer = umap.UMAP(**UMAP_kwargs)
@@ -48,7 +71,8 @@ class UMAP_loss(torch.nn.Module):
 
         # precompute values necessary for the loss evaluation
         self.sparse_high = self.reducer.graph_.tocoo() # create NN graph matrix in coordinate format
-        self.sparse_high_torch = torch.from_numpy(self.sparse_high.data).to(device="cuda", dtype=torch.float32)
+        torch.cuda.set_device(self.cuda_device)
+        self.sparse_high_torch = torch.from_numpy(self.sparse_high.data).to(device="cuda", dtype=self.dtype)
         self.heads = torch.from_numpy(self.sparse_high.row.astype(np.int_)).to(device="cuda")
         self.tails = torch.from_numpy(self.sparse_high.col.astype(np.int_)).to(device="cuda")
         
@@ -67,8 +91,8 @@ class UMAP_loss(torch.nn.Module):
         """
         Computes low-dimensional pairwise similarites from embeddings via keops.
         """
-        lazy_embd_i = LazyTensor(embedding[:, None, :].to(dtype=torch.float32))
-        lazy_embd_j = LazyTensor(embedding[None].to(dtype=torch.float32))
+        lazy_embd_i = LazyTensor(embedding[:, None, :].to(dtype=self.dtype))
+        lazy_embd_j = LazyTensor(embedding[None].to(dtype=self.dtype))
 
         sq_dists = ((lazy_embd_i-lazy_embd_j) ** 2).sum(-1)
         return 1.0 / (1.0 + sq_dists) # squared = True
@@ -77,10 +101,10 @@ class UMAP_loss(torch.nn.Module):
         """
         Computes the effective, decreased repulsive weights and the degrees of each node, keops implementation
         """
-        n_points = LazyTensor(torch.tensor(high_sim.shape[0], device="cuda", dtype=torch.float32).contiguous())
+        n_points = LazyTensor(torch.tensor(high_sim.shape[0], device="cuda", dtype=self.dtype).contiguous())
 
         degrees = np.array(high_sim.sum(-1)).ravel()
-        degrees_t = torch.tensor(degrees, device="cuda", dtype=torch.float32).contiguous()
+        degrees_t = torch.tensor(degrees, device="cuda", dtype=self.dtype).contiguous()
         
         degrees_i = LazyTensor(degrees_t[:, None, None])
         degrees_j = LazyTensor(degrees_t[None, :, None])
@@ -123,23 +147,50 @@ class UMAP_loss(torch.nn.Module):
 
 class TSNE_loss(torch.nn.Module):
     """
-    Class to define a loss object, precomputed on a specific dataset.
+    Class to define a KL Divergence loss object, precomputed on a specific dataset.
     """
-    def __init__(self, x_data, y_data, scale=3.5, TSNE_kwargs=None):
-        
+    def __init__(self, x_data, y_data=None, scale=3.5, TSNE_kwargs={}, cuda_device=cuda_default_device, dtype=torch.float32):
+        """
+        Parameters
+        ----------
+        x_data : numpy array
+            All high-dimensional data points.
+        y_data : numpy array, default=None
+            All labels for x_data.
+        scale : float, default=3.5
+            Embeddings will be multiplied with this value before calculating its loss. Learning rates
+            used with default openTSNE need to be divided by scale before used with TSNE_loss to be comparable,
+            as the gradients of the loss will be scaled together with the embeddings.
+        TSNE_kwargs : dict, default={"a":1.0, "b":1.0}
+            Kwargs that will be passed on to openTSNE.affinity.PerplexityBasedNN().
+        cuda_device : int, default=0
+            Index of cuda device to be used.
+        dtype : torch.dtype, default=torch.float32
+            Datatype to be used for torch tensors and pykeops LazyTensors. The default
+            value should work for all functions.
+        """
+        super().__init__()
+        import openTSNE
+        import scipy
+
+        # x_data will be deleted after computing high-dimensional similarities, save length only
         self.num_datapoints = len(x_data)
 
         # save parameters
+        self.y_data = y_data
         self.scale = scale
         self.TSNE_kwargs = TSNE_kwargs
+        self.cuda_device = cuda_device
+        self.dtype = dtype
 
         # compute high dimensional similarities
         high_sim_all = openTSNE.affinity.PerplexityBasedNN(x_data, **TSNE_kwargs)
         sparse_high = scipy.sparse.coo_matrix(high_sim_all.P)
 
         # precompute the necessary values for the loss evaluation
-        self.sparse_high_data_torch = torch.from_numpy(sparse_high.data).to(device="cuda", dtype=torch.float32)
-        self.high_sim_pos_edges_norm = torch.from_numpy(sparse_high.data / sparse_high.data.sum()).to(device="cuda", dtype=torch.float32, memory_format=torch.contiguous_format)
+        torch.cuda.set_device(self.cuda_device)
+        self.sparse_high_data_torch = torch.from_numpy(sparse_high.data).to(device="cuda", dtype=self.dtype)
+        self.high_sim_pos_edges_norm = torch.from_numpy(sparse_high.data / sparse_high.data.sum()).to(device="cuda", dtype=self.dtype, memory_format=torch.contiguous_format)
         self.heads = torch.from_numpy(sparse_high.row.astype(np.int_)).to(device="cuda")
         self.tails = torch.from_numpy(sparse_high.col.astype(np.int_)).to(device="cuda")
 
@@ -155,11 +206,20 @@ class TSNE_loss(torch.nn.Module):
         """
         Computes low-dimensional pairwise similarites from embeddings via keops.
         """
-        lazy_embd_i = LazyTensor(embedding[:, None, :].to(dtype=torch.float32))
-        lazy_embd_j = LazyTensor(embedding[None].to(dtype=torch.float32))
+        lazy_embd_i = LazyTensor(embedding[:, None, :].to(dtype=self.dtype))
+        lazy_embd_j = LazyTensor(embedding[None].to(dtype=self.dtype))
 
         sq_dists = ((lazy_embd_i-lazy_embd_j) ** 2).sum(-1)
         return 1.0 / (1.0 + sq_dists) # squared = True
+    
+    def keops_identity(self, n):
+        x = torch.arange(n, dtype=self.dtype, device="cuda")
+
+        x_i = LazyTensor(x[:, None], axis=0)
+        x_j = LazyTensor(x[:, None], axis=1)
+
+        id_mat  = (0.5-(x_i-x_j).abs()).step()
+        return id_mat
     
     def compute_normalization(self, x, no_diag=True):
         """
@@ -168,7 +228,7 @@ class TSNE_loss(torch.nn.Module):
         sims = self.compute_low_dim_psim_keops_embd(x)
 
         if no_diag:
-            sims = sims * ( 1.0 - keops_identity(len(x)) )
+            sims = sims * ( 1.0 - self.keops_identity(len(x)) )
 
         total_sim = ContiguousBackward().apply(sims.sum(1)).sum(0)  # Performance ~10.7ms
         return total_sim
