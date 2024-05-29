@@ -1,6 +1,6 @@
 # NE-AutoNEB
 
-This repository contains code used for my Physics Bachelor's Thesis\
+This repository contains code used for my Physics Bachelor's [Thesis](https://github.com/premfi/NE-AutoNEB/blob/main/Thesis.pdf)\
 **Connecting The Dots: Low Loss Paths Between Neighbor Embeddings (2024).**
 
 Its main functionality is based on [PyTorch-AutoNEB](https://github.com/fdraxler/PyTorch-AutoNEB) by [Felix Draxler](https://github.com/fdraxler).
@@ -36,4 +36,4 @@ Use ```pip install -r requirements.txt``` inside the activated conda environment
 The Jupyter Notebook [```connect.ipynb```](https://github.com/premfi/NE-AutoNEB/blob/main/ne_autoneb/connect.ipynb) contains an exemplary work flow to create and optimize a graph of the connection between two Neighbor Embedding minima.
 Functions to plot the loss over the course of the whole optimization and to plot one or several embeddings with a colorbar can be found in [```visualize.ipynb```](https://github.com/premfi/NE-AutoNEB/blob/main/ne_autoneb/visualize.ipynb).
 
-Loss functions for UMAP and tSNE are included, but loss functions for other dimension reduction algorithms can be used in the same way after defining a suitable class in [```losses.py```](https://github.com/premfi/NE-AutoNEB/blob/main/ne_autoneb/losses.py).
+Loss functions for UMAP and t-SNE are included, but loss functions for other dimension reduction algorithms can be used in the same way after defining a suitable class in [```losses.py```](https://github.com/premfi/NE-AutoNEB/blob/main/ne_autoneb/losses.py).
