@@ -1,0 +1,211 @@
+# This config was used to create the UMAP connections for the thesis
+
+# Landscape exploration
+# exploration:
+value_key: train_loss
+weight_key: saddle_train_loss
+suggest:
+  - unfinished
+  - disconnected
+  - mst
+autoneb:
+  # The first cycle should contain all information, subsequent cycles only _differences_ from the previous
+  # One dummy cycle to include the initial loss curve in the analysis dict
+  - insert:
+      name: leave  # do not insert further points, original path should not be changed in this step
+    subsample_pivot_count: 9
+    spring_constant: inf
+    weight_decay: 0.0 # has to be zero for optimization to work at all
+    optim:
+      nsteps: 1 #only one step for analysis
+      algorithm:
+        name: SGD
+        lr: 0.000000001   #really small, as this step is not for optimization
+        momentum: 0.9
+  # optimize original points once (10 steps)
+  - insert:
+      name: leave  # currently 3 points to optimize (5 total)
+    optim:
+      nsteps: 10 # small number to allow for many lr changes (optimal would be linear decrease)
+      algorithm:
+        name: SGD
+        lr: 0.05
+        momentum: 0.9
+  # insert 1 point each time, until 10 points total
+  - insert:
+      name: highest
+      count: 1 # inserts 1 point
+      key: dense_train_loss
+    optim:
+      nsteps: 10 # small number to allow for many lr changes (optimal would be linear decrease)
+      algorithm:
+        lr: 0.05
+  - insert:
+      name: highest
+      count: 1 # inserts 1 point
+      key: dense_train_loss
+    optim:
+      nsteps: 10 # small number to allow for many lr changes (optimal would be linear decrease)
+      algorithm:
+        lr: 0.05
+  # start learning rate decay
+  - insert:
+      name: highest
+      count: 1 # inserts 1 point
+      key: dense_train_loss
+    optim:
+      algorithm:
+        lr: 0.049
+  - optim:  # inserts 1 point
+      algorithm:
+        lr: 0.048
+  - optim:  # inserts 1 point
+      algorithm:
+        lr: 0.047
+  # should be 10 points (8 optimized) now, stop inserting
+  - insert:
+      name: leave  # don't add further points, just optimize with lr decay
+    optim:
+      algorithm:
+        lr: 0.046
+  - optim:
+      algorithm:
+        lr: 0.045
+  - optim:
+      algorithm:
+        lr: 0.044
+  - optim:
+      algorithm:
+        lr: 0.043
+  - optim:
+      algorithm:
+        lr: 0.042
+  - optim:
+      algorithm:
+        lr: 0.041
+  - insert:
+      name: highest
+      count: 4 # inserts 2 points to combat arising peaks near endpoints
+      key: dense_train_loss
+    optim:
+      algorithm:
+        lr: 0.04
+  - insert:
+      name: leave # stop insertion
+    optim:
+      algorithm:
+        lr: 0.039
+  - optim:
+      algorithm:
+        lr: 0.038
+  - optim:
+      algorithm:
+        lr: 0.037
+  - optim:
+      algorithm:
+        lr: 0.036
+  - optim:
+      algorithm:
+        lr: 0.035
+  - optim:
+      algorithm:
+        lr: 0.034
+  - optim:
+      algorithm:
+        lr: 0.033
+  - optim:
+      algorithm:
+        lr: 0.032
+  - optim:
+      algorithm:
+        lr: 0.031
+  - optim:
+      algorithm:
+        lr: 0.03
+  - optim:
+      algorithm:
+        lr: 0.029
+  - optim:
+      algorithm:
+        lr: 0.028
+  - optim:
+      algorithm:
+        lr: 0.027
+  - optim:
+      algorithm:
+        lr: 0.026
+  - optim:
+      algorithm:
+        lr: 0.025
+  - optim:
+      algorithm:
+        lr: 0.024
+  - optim:
+      algorithm:
+        lr: 0.023
+  - optim:
+      algorithm:
+        lr: 0.022
+  - optim:
+      algorithm:
+        lr: 0.021
+  - optim:
+      algorithm:
+        lr: 0.02
+  - optim:
+      algorithm:
+        lr: 0.019
+  - optim:
+      algorithm:
+        lr: 0.018
+  - optim:
+      algorithm:
+        lr: 0.017
+  - optim:
+      algorithm:
+        lr: 0.016
+  - optim:
+      algorithm:
+        lr: 0.015
+  - optim:
+      algorithm:
+        lr: 0.014
+  - optim:
+      algorithm:
+        lr: 0.013
+  - optim:
+      algorithm:
+        lr: 0.012
+  - optim:
+      algorithm:
+        lr: 0.011
+  - optim:
+      algorithm:
+        lr: 0.01
+  - optim:
+      algorithm:
+        lr: 0.009
+  - optim:
+      algorithm:
+        lr: 0.008
+  - optim:
+      algorithm:
+        lr: 0.007
+  - optim:
+      algorithm:
+        lr: 0.006
+  - optim:
+      algorithm:
+        lr: 0.005
+  - optim:
+      algorithm:
+        lr: 0.004
+  - optim:
+      algorithm:
+        lr: 0.003
+  - optim:
+      algorithm:
+        lr: 0.002
+  - optim:
+      algorithm:
+        lr: 0.001

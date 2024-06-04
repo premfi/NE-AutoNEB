@@ -1,19 +1,22 @@
+import itertools
+
 import torch
 import numpy as np
 import networkx as nx
 
-def optimize(emb, loss_obj, config):
-    """
-    Optimize one single embedding in the exact same way as specified in config.
-    """
+from utils import align_embs
+
+
+def optimize(emb, loss_inst, config):
+    """Optimize one single embedding in the exact same way as specified in config."""
     if type(emb) == np.ndarray:
         emb = torch.from_numpy(emb)
 
     # make tensors live on same cuda device as the loss function evaluating them
-    torch.cuda.set_device(loss_obj.cuda_device)
+    torch.cuda.set_device(loss_inst.cuda_device)
 
     # initialize embedding to be optimized
-    path_point = emb.to(device="cuda", dtype=loss_obj.dtype)
+    path_point = emb.to(device="cuda", dtype=loss_inst.dtype)
     path_point.requires_grad_(True)
 
     # initialize optimizer
@@ -30,8 +33,8 @@ def optimize(emb, loss_obj, config):
         for i in range(nsteps):
             optimizer.zero_grad()
 
-            # apply the loss function defined by loss_obj
-            loss = loss_obj(path_point)
+            # apply the loss function defined by loss_inst
+            loss = loss_inst(path_point)
             loss.backward()
 
             # only clip gradients if clip_grad is not set to 0
@@ -44,56 +47,72 @@ def optimize(emb, loss_obj, config):
     return path_point.detach().to(device="cpu"), loss.item()
 
 
-
-def create_graph(nodes, loss_obj, config, initialize):
-    """
-    Create graph, initialize edges with linear interpolation.
-    """
-    node1, node2 = nodes
-    node_names = [1, 2]
+def create_graph(nodes, loss_inst, config, initialize, node_idxs=None, align=True):
+    """Create graph, initialize edges with linear interpolation."""
+    # use ascending integers as node indeces if not specified otherwise
+    if node_idxs is None:
+        node_idxs = np.arange(len(nodes)) + 1
 
     # optimize nodes
-    node1_optimized, node1_loss = optimize(node1, loss_obj, config)
-    node2_optimized, node2_loss = optimize(node2, loss_obj, config)
+    nodes_optimized = []
+    losses_optimized = []
+    for node in nodes:
+        node_optimized, loss_optimized = optimize(node, loss_inst, config) # returns a tuple: (node, loss)
+        nodes_optimized = nodes_optimized + [node_optimized] # list of torch.Tensors
+        losses_optimized = losses_optimized + [loss_optimized]
 
     # convert nodes to numpy arrays if they are not already
-    nodes = [torch.from_numpy(node)if (type(node) == np.ndarray) else node for node in nodes]
+    nodes = [node.numpy() if (type(node) == torch.Tensor) else node for node in nodes]
 
-    # create graph with nodes containing rotated and optimized embeddings
+    # align nodes
+    if align:
+        nodes = align_embs(nodes)
+        nodes_optimized = align_embs(nodes_optimized)
+        # alignment returns np.ndarray, but torch.Tensor is needed later
+        nodes_optimized = torch.from_numpy(nodes_optimized).to(dtype=loss_inst.dtype)
+
+    # nodes_optimized does now contain torch.Tensors, regardless of if align was executed
+
+    # create graph with nodes containing aligned and optimized embeddings
     G = nx.MultiGraph()
-    G.add_node(1, coords=node1_optimized, train_loss=node1_loss, train_error=0) # the node attributes do not matter for optimization
-    G.add_node(2, coords=node2_optimized, train_loss=node2_loss, train_error=0)
+    for i, (node_optimized, loss_optimized) in enumerate(zip(nodes_optimized, losses_optimized)):
+        G.add_node(node_idxs[i], coords=node_optimized, train_loss=loss_optimized, train_error=0)
 
     # check if number of interpolations or an initial path was passed
     try:
         initialize = int(initialize)
     except TypeError:
+        # if multiple nodes were passed, initialize linearly even if an initial path was given
+        if len(nodes) > 2:
+            initialize = len(initialize)
+            print(f"Custom initialization is not supported for multiple nodes. Using linear initialization with {initialize} pivots instead.")
         # convert initialize to torch.Tensor if it was given as np.ndarray
         if isinstance(initialize, np.ndarray):
-            initialize = torch.from_numpy(initialize).to(dtype=loss_obj.dtype)
+            initialize = torch.from_numpy(initialize).to(dtype=loss_inst.dtype)
 
-    # define initial path
-    if isinstance(initialize, int):
-        # initialize by interpolating linearly between non-optimized node embeddings with initialize steps
-        # expects node1 and node2 to be np.ndarrays
-        fake_path_coords = np.array([(1 - alpha) * node1 + alpha * node2 for alpha in np.linspace(0, 1, initialize+2)[1:-1]])
-        fake_path_coords = torch.cat((node1_optimized[None], torch.from_numpy(fake_path_coords).to(dtype=loss_obj.dtype), node2_optimized[None]))
+    for i, j in itertools.combinations(range(len(nodes)), 2):
+        # define initial path
+        if isinstance(initialize, int):
+            # initialize by interpolating linearly between non-optimized node embeddings with initialize steps
+            # expects nodes to be np.ndarrays, nodes_optimized to contain torch.Tensor
+            fake_path_coords = np.array([(1 - alpha) * nodes[i] + alpha * nodes[j] for alpha in np.linspace(0, 1, initialize+2)[1:-1]])
+            fake_path_coords = torch.cat((nodes_optimized[i][None], torch.from_numpy(fake_path_coords).to(dtype=loss_inst.dtype), nodes_optimized[j][None]))
 
-    else:
-        # initialize path with the points given as initialize
-        # expects initialize to be torch.Tensor
-        fake_path_coords = torch.cat((node1_optimized[None], initialize, node2_optimized[None])) # for predefined path initialization
+        else:
+            # initialize path with the points given as initialize
+            # expects initialize to be torch.Tensor, nodes_optimized to contain torch.Tensor
+            fake_path_coords = torch.cat((nodes_optimized[i][None], initialize, nodes_optimized[j][None])) # for predefined path initialization
+            
+        # reshape each point to 1D tensor
+        fake_path_coords = fake_path_coords.reshape((len(fake_path_coords), 2 * loss_inst.num_datapoints)).cpu()
+
+        # create edge to make AutoNEB believe that an optimization cycle already happened, resulting in this edge
+        fake_edge_dict = {"path_coords": fake_path_coords,
+                        'target_distances': (fake_path_coords[:-1] - fake_path_coords[1:]).norm(2, 1),
+                        'saddle_train_error': 0.0,
+                        'saddle_train_loss': 0.0,}
         
-    # reshape each point to 1D tensor
-    fake_path_coords = fake_path_coords.reshape((len(fake_path_coords), 2 * loss_obj.num_datapoints)).cpu()
-
-    # create edge to make AutoNEB believe that an optimization cycle already happened, resulting in this edge
-    fake_edge_dict = {"path_coords": fake_path_coords,
-                    'target_distances': (fake_path_coords[:-1] - fake_path_coords[1:]).norm(2, 1),
-                    'saddle_train_error': 0.0,
-                    'saddle_train_loss': 0.0,}
-    
-    # add edge with cycle number 0. AutoNEB would normally start the cycle numbers with 1
-    G.add_edge(node_names[0], node_names[1], 0, **fake_edge_dict)
+        # add edge with cycle number 0. AutoNEB would normally start the cycle numbers with 1
+        G.add_edge(node_idxs[i], node_idxs[j], 0, **fake_edge_dict)
 
     return G

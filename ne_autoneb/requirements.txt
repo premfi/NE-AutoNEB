@@ -1,8 +1,8 @@
-pykeops
 torch
 torchvision
 networkx
 numpy
 tqdm
+yaml
 matplotlib
 scipy

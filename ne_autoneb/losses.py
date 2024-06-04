@@ -5,18 +5,9 @@ import pykeops
 pykeops.test_torch_bindings()
 from pykeops.torch import LazyTensor
 
-# use first visible cuda device as default
-import os
-cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-cuda_default_device = int(cuda_visible_devices.split(",")[0])
-print(f"cuda default device set to {cuda_default_device}")
-del cuda_visible_devices
-
 # function by Roman Remme
 class ContiguousBackward(torch.autograd.Function):
-    """
-    Function to ensure contiguous gradient in backward pass. To be applied after PyKeOps reduction.
-    """
+    """Function to ensure contiguous gradient in backward pass. To be applied after PyKeOps reduction."""
     @staticmethod
     def forward(ctx, input):
         return input
@@ -25,14 +16,13 @@ class ContiguousBackward(torch.autograd.Function):
     def backward(ctx, grad_output):
         return grad_output.contiguous()
 
+
 class UMAP_loss(torch.nn.Module): 
-    """
-    Class to define a UMAP loss object, precomputed on a specific dataset.
-    """
+    """Class to define a UMAP loss object, precomputed on a specific dataset."""
+
     def __init__(self, x_data, y_data=None, UMAP_kwargs={"a":1.0, "b":1.0},
-                 negative_sample_rate=5.0, push_tail=True, cuda_device=cuda_default_device, dtype=torch.float32):
-        """
-        Parameters
+                 negative_sample_rate=5.0, push_tail=True, cuda_device=0, dtype=torch.float32):
+        """Parameters
         ----------
         x_data : numpy array
             All high-dimensional data points.
@@ -67,7 +57,6 @@ class UMAP_loss(torch.nn.Module):
         self.reducer = umap.UMAP(**UMAP_kwargs)
         # optimize example embedding
         self.example_embedding = self.reducer.fit_transform(x_data)
-        print(self.example_embedding.shape)
 
         # precompute values necessary for the loss evaluation
         self.sparse_high = self.reducer.graph_.tocoo() # create NN graph matrix in coordinate format
@@ -79,18 +68,16 @@ class UMAP_loss(torch.nn.Module):
         # get decreased repulsive weights
         self.push_weights = self.get_UMAP_push_weight_keops(self.sparse_high)
 
+        print("UMAP_loss initialized successfully")
+
     def low_dim_sim_keops_dist(self, x, squared=True):
-        """
-        Smooth function from distances to low-dimensional simiarlity. Compatible with keops
-        """
+        """Smooth function from distances to low-dimensional simiarlity. Compatible with keops"""
         if not squared:
             return 1.0 / (1.0 + x ** 2.0)
         return 1.0 / (1.0 + x) 
     
     def compute_low_dim_psim_keops_embd(self, embedding):
-        """
-        Computes low-dimensional pairwise similarites from embeddings via keops.
-        """
+        """Computes low-dimensional pairwise similarites from embeddings via keops."""
         lazy_embd_i = LazyTensor(embedding[:, None, :].to(dtype=self.dtype))
         lazy_embd_j = LazyTensor(embedding[None].to(dtype=self.dtype))
 
@@ -98,9 +85,7 @@ class UMAP_loss(torch.nn.Module):
         return 1.0 / (1.0 + sq_dists) # squared = True
     
     def get_UMAP_push_weight_keops(self, high_sim):
-        """
-        Computes the effective, decreased repulsive weights and the degrees of each node, keops implementation
-        """
+        """Computes the effective, decreased repulsive weights and the degrees of each node, keops implementation"""
         n_points = LazyTensor(torch.tensor(high_sim.shape[0], device="cuda", dtype=self.dtype).contiguous())
 
         degrees = np.array(high_sim.sum(-1)).ravel()
@@ -114,12 +99,8 @@ class UMAP_loss(torch.nn.Module):
         return self.negative_sample_rate * degrees_i * LazyTensor(torch.ones((1,len(degrees_t), 1), device="cuda").contiguous())/n_points
     
     # adapted from: https://github.com/sdamrich/vis_utils/blob/main/vis_utils/utils.py#L723
-    def forward(self, embedding,
-                            pointwise=False,
-                            eps=0.0001):
-        """
-        UMAP's true loss function, keops implementation
-        """
+    def forward(self, embedding, pointwise=False, eps=0.0001):
+        """UMAP's true loss function, keops implementation"""
 
         sq_dist_pos_edges = ((embedding[self.heads]-embedding[self.tails])**2).sum(-1)               # performance ~1.43ms
     
@@ -144,14 +125,11 @@ class UMAP_loss(torch.nn.Module):
             return -loss_a + (-loss_r)
 
 
-
 class TSNE_loss(torch.nn.Module):
-    """
-    Class to define a KL Divergence loss object, precomputed on a specific dataset.
-    """
-    def __init__(self, x_data, y_data=None, scale=3.5, TSNE_kwargs={}, cuda_device=cuda_default_device, dtype=torch.float32):
-        """
-        Parameters
+    """Class to define a KL Divergence loss object, precomputed on a specific dataset."""
+
+    def __init__(self, x_data, y_data=None, scale=3.5, TSNE_kwargs={}, cuda_device=0, dtype=torch.float32):
+        """Parameters
         ----------
         x_data : numpy array
             All high-dimensional data points.
@@ -193,19 +171,17 @@ class TSNE_loss(torch.nn.Module):
         self.high_sim_pos_edges_norm = torch.from_numpy(sparse_high.data / sparse_high.data.sum()).to(device="cuda", dtype=self.dtype, memory_format=torch.contiguous_format)
         self.heads = torch.from_numpy(sparse_high.row.astype(np.int_)).to(device="cuda")
         self.tails = torch.from_numpy(sparse_high.col.astype(np.int_)).to(device="cuda")
+        
+        print("TSNE_loss initialized successfully")
 
     def low_dim_sim_keops_dist(self, x, squared=True):
-        """
-        Smooth function from distances to low-dimensional simiarlity. Compatible with keops
-        """
+        """Smooth function from distances to low-dimensional simiarlity. Compatible with keops"""
         if not squared:
             return 1.0 / (1.0 + x ** 2.0)
         return 1.0 / (1.0 + x) 
     
     def compute_low_dim_psim_keops_embd(self, embedding):
-        """
-        Computes low-dimensional pairwise similarites from embeddings via keops.
-        """
+        """Computes low-dimensional pairwise similarites from embeddings via keops."""
         lazy_embd_i = LazyTensor(embedding[:, None, :].to(dtype=self.dtype))
         lazy_embd_j = LazyTensor(embedding[None].to(dtype=self.dtype))
 
@@ -222,9 +198,7 @@ class TSNE_loss(torch.nn.Module):
         return id_mat
     
     def compute_normalization(self, x, no_diag=True):
-        """
-        Pykeops implementation for computing
-        """
+        """Pykeops implementation for computing"""
         sims = self.compute_low_dim_psim_keops_embd(x)
 
         if no_diag:
@@ -236,9 +210,7 @@ class TSNE_loss(torch.nn.Module):
     # adapted from: https://github.com/sdamrich/vis_utils/blob/main/vis_utils/utils.py#L631
     def forward(self, embedding,  # torch.tensor
                     scale=3.5):                # openTSNE embeddings are enlargened by this loss, scaling them up beforehands prevents that
-
-        """
-        Computes the KL divergence between the high-dimensional p and low-dimensional
+        """Computes the KL divergence between the high-dimensional p and low-dimensional
         similarities q. The latter are inferred from the embedding.
         """
         embedding = embedding * scale
